@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import math
 from enum import Enum, auto
 from pathlib import Path
 from typing import Optional
 
 import pygame
 
-from . import config
+from . import config, geometry
 from .editor import EditorMode, TrackEditor
+from .racer import Racer, RacerControls
 from .track import Track
 
 _MODE_HINTS = {
@@ -19,14 +21,21 @@ _MODE_HINTS = {
 
 _HELP_TEXT = (
     "S save   L load   U undo stroke   C clear obstacles   "
-    "R reset track   1 move start   2 move finish   Esc quit"
+    "R reset track   1 move start   2 move finish   T test drive   Esc quit"
 )
+
+_DRIVE_HELP_TEXT = "Up/Down throttle+brake   Left/Right steer   Esc back to editor"
 
 
 class FileMode(Enum):
     NONE = auto()
     SAVE = auto()
     LOAD = auto()
+
+
+class AppMode(Enum):
+    EDITING = auto()
+    DRIVING = auto()
 
 
 class App:
@@ -42,6 +51,9 @@ class App:
 
         self.editor = TrackEditor()
         self.running = True
+
+        self.mode = AppMode.EDITING
+        self.racer: Optional[Racer] = None
 
         self.file_mode = FileMode.NONE
         self.input_text = ""
@@ -68,19 +80,62 @@ class App:
             elif self.file_mode is not FileMode.NONE:
                 self._handle_file_prompt_event(event)
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                self.running = False
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_s:
-                self._begin_file_prompt(FileMode.SAVE)
-            elif event.type == pygame.KEYDOWN and event.key == pygame.K_l:
-                self._begin_file_prompt(FileMode.LOAD)
-            else:
-                self.editor.handle_event(event)
+                self._on_escape()
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_t:
+                self._toggle_drive_mode()
+            elif self.mode is AppMode.EDITING:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_s:
+                    self._begin_file_prompt(FileMode.SAVE)
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_l:
+                    self._begin_file_prompt(FileMode.LOAD)
+                else:
+                    self.editor.handle_event(event)
+
+    def _on_escape(self) -> None:
+        if self.mode is AppMode.DRIVING:
+            self._toggle_drive_mode()
+        else:
+            self.running = False
+
+    def _toggle_drive_mode(self) -> None:
+        if self.mode is AppMode.DRIVING:
+            self.mode = AppMode.EDITING
+            self.racer = None
+            return
+        track = self.editor.track
+        if not track.is_complete():
+            self._set_status("Add a start, finish, and an obstacle before test driving")
+            return
+        heading = math.atan2(track.finish[1] - track.start[1], track.finish[0] - track.start[0])
+        self.racer = Racer(track.start[0], track.start[1], heading)
+        self.mode = AppMode.DRIVING
 
     def _update(self, dt: float) -> None:
         if self.status_timer > 0:
             self.status_timer -= dt
             if self.status_timer <= 0:
                 self.status_message = ""
+        if self.mode is AppMode.DRIVING and self.racer is not None:
+            self._update_racer(dt)
+
+    def _update_racer(self, dt: float) -> None:
+        keys = pygame.key.get_pressed()
+        controls = RacerControls(
+            throttle=keys[pygame.K_UP],
+            brake=keys[pygame.K_DOWN],
+            steer_left=keys[pygame.K_LEFT],
+            steer_right=keys[pygame.K_RIGHT],
+        )
+        self.racer.step(dt, controls)
+        if geometry.circle_hits_any_segment(
+            self.racer.position, config.RACER_RADIUS, self.editor.track.segments()
+        ):
+            track = self.editor.track
+            heading = math.atan2(
+                track.finish[1] - track.start[1], track.finish[0] - track.start[0]
+            )
+            self.racer.reset(track.start[0], track.start[1], heading)
+            self._set_status("Crashed! Resetting to start.")
 
     # save / load text prompt
 
@@ -133,10 +188,21 @@ class App:
         self._draw_grid()
         self._draw_boundaries()
         self._draw_start_finish()
+        if self.mode is AppMode.DRIVING and self.racer is not None:
+            self._draw_racer()
         self._draw_hud()
         if self.file_mode is not FileMode.NONE:
             self._draw_file_prompt()
         pygame.display.flip()
+
+    def _draw_racer(self) -> None:
+        racer = self.racer
+        pygame.draw.circle(self.screen, config.RACER_COLOR, racer.position, config.RACER_RADIUS)
+        nose = (
+            racer.x + math.cos(racer.heading) * config.RACER_RADIUS * 1.8,
+            racer.y + math.sin(racer.heading) * config.RACER_RADIUS * 1.8,
+        )
+        pygame.draw.line(self.screen, config.RACER_COLOR, racer.position, nose, 2)
 
     def _draw_grid(self) -> None:
         for x in range(0, config.SCREEN_WIDTH, config.GRID_SPACING):
@@ -166,7 +232,7 @@ class App:
         self.screen.blit(surf, (pos[0] + config.POINT_RADIUS + 6, pos[1] - surf.get_height() // 2))
 
     def _draw_hud(self) -> None:
-        lines = [self._mode_hint(), _HELP_TEXT]
+        lines = [self._mode_hint(), self._help_text()]
         y = 10
         for text in lines:
             surf = self.font.render(text, True, config.TEXT_COLOR)
@@ -178,7 +244,12 @@ class App:
             self.screen.blit(surf, (10, config.SCREEN_HEIGHT - surf.get_height() - 10))
 
     def _mode_hint(self) -> str:
+        if self.mode is AppMode.DRIVING and self.racer is not None:
+            return f"Test drive — speed {self.racer.speed:.0f} px/s"
         return _MODE_HINTS[self.editor.mode]
+
+    def _help_text(self) -> str:
+        return _DRIVE_HELP_TEXT if self.mode is AppMode.DRIVING else _HELP_TEXT
 
     def _draw_file_prompt(self) -> None:
         label = "Save track as: " if self.file_mode is FileMode.SAVE else "Load track: "

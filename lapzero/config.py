@@ -24,3 +24,14 @@ MIN_STROKE_POINT_DISTANCE = 6
 #persistence
 TRACKS_DIR = "tracks"
 DEFAULT_TRACK_NAME = "track"
+
+#racer physics
+RACER_RADIUS = 10
+RACER_COLOR = (255, 200, 60)
+RACER_MAX_SPEED = 260.0        # px/sec
+RACER_MIN_SPEED = -100.0       # allows slow reverse
+RACER_ACCELERATION = 220.0     # px/sec^2 while throttling
+RACER_BRAKE_DECEL = 260.0      # px/sec^2 while braking/reversing
+RACER_FRICTION_DECEL = 140.0   # px/sec^2 natural coast-down, no input
+RACER_MAX_TURN_RATE = 3.2      # rad/sec, at zero speed (sharpest turn)
+RACER_MIN_TURN_RATE = 0.9      # rad/sec, at max speed (widest turn)
