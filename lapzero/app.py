@@ -10,6 +10,7 @@ import pygame
 from . import config, geometry
 from .editor import EditorMode, TrackEditor
 from .racer import Racer, RacerControls
+from .sensors import cast_rays, ray_angles
 from .track import Track
 
 _MODE_HINTS = {
@@ -54,6 +55,7 @@ class App:
 
         self.mode = AppMode.EDITING
         self.racer: Optional[Racer] = None
+        self.ray_distances: list[float] = []
 
         self.file_mode = FileMode.NONE
         self.input_text = ""
@@ -101,6 +103,7 @@ class App:
         if self.mode is AppMode.DRIVING:
             self.mode = AppMode.EDITING
             self.racer = None
+            self.ray_distances = []
             return
         track = self.editor.track
         if not track.is_complete():
@@ -108,6 +111,7 @@ class App:
             return
         heading = math.atan2(track.finish[1] - track.start[1], track.finish[0] - track.start[0])
         self.racer = Racer(track.start[0], track.start[1], heading)
+        self.ray_distances = cast_rays(self.racer.position, self.racer.heading, track.segments())
         self.mode = AppMode.DRIVING
 
     def _update(self, dt: float) -> None:
@@ -127,15 +131,16 @@ class App:
             steer_right=keys[pygame.K_RIGHT],
         )
         self.racer.step(dt, controls)
+        track = self.editor.track
         if geometry.circle_hits_any_segment(
-            self.racer.position, config.RACER_RADIUS, self.editor.track.segments()
+            self.racer.position, config.RACER_RADIUS, track.segments()
         ):
-            track = self.editor.track
             heading = math.atan2(
                 track.finish[1] - track.start[1], track.finish[0] - track.start[0]
             )
             self.racer.reset(track.start[0], track.start[1], heading)
             self._set_status("Crashed! Resetting to start.")
+        self.ray_distances = cast_rays(self.racer.position, self.racer.heading, track.segments())
 
     # save / load text prompt
 
@@ -197,12 +202,26 @@ class App:
 
     def _draw_racer(self) -> None:
         racer = self.racer
+        self._draw_rays()
         pygame.draw.circle(self.screen, config.RACER_COLOR, racer.position, config.RACER_RADIUS)
         nose = (
             racer.x + math.cos(racer.heading) * config.RACER_RADIUS * 1.8,
             racer.y + math.sin(racer.heading) * config.RACER_RADIUS * 1.8,
         )
         pygame.draw.line(self.screen, config.RACER_COLOR, racer.position, nose, 2)
+
+    def _draw_rays(self) -> None:
+        racer = self.racer
+        for angle, distance in zip(ray_angles(racer.heading), self.ray_distances):
+            end = (
+                racer.x + math.cos(angle) * distance,
+                racer.y + math.sin(angle) * distance,
+            )
+            hit = distance < config.RAY_MAX_DISTANCE - 0.5
+            color = config.RAY_HIT_COLOR if hit else config.RAY_COLOR
+            pygame.draw.line(self.screen, color, racer.position, end, 1)
+            if hit:
+                pygame.draw.circle(self.screen, color, end, 3)
 
     def _draw_grid(self) -> None:
         for x in range(0, config.SCREEN_WIDTH, config.GRID_SPACING):
@@ -233,6 +252,8 @@ class App:
 
     def _draw_hud(self) -> None:
         lines = [self._mode_hint(), self._help_text()]
+        if self.mode is AppMode.DRIVING and self.ray_distances:
+            lines.append(self._ray_readout())
         y = 10
         for text in lines:
             surf = self.font.render(text, True, config.TEXT_COLOR)
@@ -250,6 +271,9 @@ class App:
 
     def _help_text(self) -> str:
         return _DRIVE_HELP_TEXT if self.mode is AppMode.DRIVING else _HELP_TEXT
+
+    def _ray_readout(self) -> str:
+        return "Rays: " + "  ".join(f"{d:.0f}" for d in self.ray_distances)
 
     def _draw_file_prompt(self) -> None:
         label = "Save track as: " if self.file_mode is FileMode.SAVE else "Load track: "

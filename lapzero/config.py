@@ -35,3 +35,10 @@ RACER_BRAKE_DECEL = 260.0      # px/sec^2 while braking/reversing
 RACER_FRICTION_DECEL = 140.0   # px/sec^2 natural coast-down, no input
 RACER_MAX_TURN_RATE = 3.2      # rad/sec, at zero speed (sharpest turn)
 RACER_MIN_TURN_RATE = 0.9      # rad/sec, at max speed (widest turn)
+
+#raycast sensing
+RAY_COUNT = 7
+RAY_SPREAD_DEGREES = 180.0     # total field of view, centered on heading
+RAY_MAX_DISTANCE = 400.0
+RAY_COLOR = (90, 160, 255)
+RAY_HIT_COLOR = (255, 120, 120)
