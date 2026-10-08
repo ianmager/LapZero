@@ -43,9 +43,26 @@ RAY_MAX_DISTANCE = 400.0
 RAY_COLOR = (90, 160, 255)
 RAY_HIT_COLOR = (255, 120, 120)
 
-#neural net (forward pass only; the genetic algorithm sets the weights later)
+#neural net
 NN_HIDDEN_SIZE = 6
 NN_STEER_DEADZONE = 0.2
 NN_THROTTLE_DEADZONE = 0.2
 RACER_AI_COLOR = (120, 210, 255)
+RACER_DEAD_COLOR = (110, 110, 120)
+RACER_FINISHED_COLOR = (80, 220, 120)
 AI_CRUISE_SPEED = 110.0        # px/sec cap while wandering; keeps turns tight enough to avoid walls
+
+#evolution
+FINISH_RADIUS = 42.0
+EXPLORE_CELL = 36              # new ground scored in cells of this size
+GA_POPULATION = 40
+GA_ELITE = 4
+GA_TOURNAMENT = 4
+GA_MUTATION_RATE = 0.15
+GA_MUTATION_SCALE = 0.22
+GA_FINE_MUTATION_RATE = 0.12   # small tweaks of the lap record, once it exists
+GA_FINE_MUTATION_SCALE = 0.07
+GA_GENERATION_SECONDS = 18.0
+GA_STALL_SECONDS = 5.0         # die if no new ground is covered in this long
+GA_STEPS_PER_FRAME = 1
+GA_FAST_STEPS = 4

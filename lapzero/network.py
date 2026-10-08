@@ -9,10 +9,10 @@ from .racer import RacerControls
 
 
 class Network:
-    """Small feedforward net: ray distances + speed in, steering + throttle out.
+    """Small feedforward net: ray distances and speed in, steering and throttle out.
 
-    Weights only — no backprop. `randomize()` draws a fresh set; later the
-    genetic algorithm will replace those weights directly.
+    Weights only — no backprop. The genetic algorithm copies, crosses, and
+    mutates `genome()`.
     """
 
     def __init__(self, rng: np.random.Generator | None = None) -> None:
@@ -35,6 +35,31 @@ class Network:
         for weight, bias in zip(self.weights, self.biases):
             x = np.tanh(weight @ x + bias)
         return x
+
+    def genome(self) -> np.ndarray:
+        parts = [weight.ravel() for weight in self.weights]
+        parts += [bias.ravel() for bias in self.biases]
+        return np.concatenate(parts)
+
+    def set_genome(self, genes: Sequence[float]) -> None:
+        genes = np.asarray(genes, dtype=float)
+        index = 0
+        for array in (*self.weights, *self.biases):
+            size = array.size
+            array[:] = genes[index:index + size].reshape(array.shape)
+            index += size
+
+    def nudge_throttle(self, amount: float) -> None:
+        """Push the throttle output up. Used so lap-time search tries going faster."""
+        self.biases[-1][1] += amount
+
+    def clone(self) -> "Network":
+        other = Network.__new__(Network)
+        other.rng = self.rng
+        other.layer_sizes = self.layer_sizes
+        other.weights = [weight.copy() for weight in self.weights]
+        other.biases = [bias.copy() for bias in self.biases]
+        return other
 
 
 def make_inputs(ray_distances: Sequence[float], speed: float) -> np.ndarray:
@@ -100,12 +125,25 @@ class AimlessDriver:
         return 0.0
 
 
-def controls_from_output(output: Sequence[float]) -> RacerControls:
-    """Map continuous steering/throttle in [-1, 1] onto the racer's on/off controls."""
+def controls_from_output(output: Sequence[float], analog: bool = False) -> RacerControls:
+    """Map steering/throttle in [-1, 1] onto racer controls.
+
+    Analog mode keeps the magnitude: a larger throttle output is a higher
+    target speed, and a larger steer output turns harder. Evolution uses
+    that so later generations can actually go faster.
+    """
     steer, throttle = float(output[0]), float(output[1])
-    return RacerControls(
+    controls = RacerControls(
         throttle=throttle > config.NN_THROTTLE_DEADZONE,
         brake=throttle < -config.NN_THROTTLE_DEADZONE,
         steer_left=steer < -config.NN_STEER_DEADZONE,
         steer_right=steer > config.NN_STEER_DEADZONE,
     )
+    if analog:
+        if abs(throttle) > config.NN_THROTTLE_DEADZONE:
+            controls.target_speed = throttle * config.RACER_MAX_SPEED
+        if abs(steer) > config.NN_STEER_DEADZONE:
+            controls.steer_power = abs(steer)
+        else:
+            controls.steer_power = 0.0
+    return controls

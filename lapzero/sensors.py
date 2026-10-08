@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 from typing import Iterable, List
 
-from . import config
+from . import config, geometry
 from .geometry import raycast
 from .track import Point, Segment
 
@@ -18,12 +18,13 @@ def ray_angles(heading: float) -> List[float]:
     return [start + i * step for i in range(config.RAY_COUNT)]
 
 
-def cast_rays(origin: Point, heading: float, segments: Iterable[Segment]) -> List[float]:
+def cast_rays(origin: Point, heading: float, obstacles: Iterable[Segment] | geometry.SegmentGrid) -> List[float]:
     """Distance readings for each ray, capped at RAY_MAX_DISTANCE. These plus
     speed are the neural net's inputs.
     """
-    segments = list(segments)
-    return [
-        raycast(origin, angle, config.RAY_MAX_DISTANCE, segments)
-        for angle in ray_angles(heading)
-    ]
+    if isinstance(obstacles, geometry.SegmentGrid):
+        cast = obstacles.raycast
+    else:
+        segments = list(obstacles)
+        cast = lambda origin, angle, distance: raycast(origin, angle, distance, segments)
+    return [cast(origin, angle, config.RAY_MAX_DISTANCE) for angle in ray_angles(heading)]

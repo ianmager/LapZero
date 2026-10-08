@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 from typing import Iterable, Optional
 
-from .track import Point, Segment
+from . import config
+from .track import Point, Segment, Track
 
 
 def closest_point_on_segment(p: Point, a: Point, b: Point) -> Point:
@@ -20,6 +21,23 @@ def closest_point_on_segment(p: Point, a: Point, b: Point) -> Point:
 
 def distance_point_to_segment(p: Point, a: Point, b: Point) -> float:
     return math.dist(p, closest_point_on_segment(p, a, b))
+
+
+def window_border_segments() -> list[Segment]:
+    """The four edges of the window, treated as walls."""
+    width = float(config.SCREEN_WIDTH - 1)
+    height = float(config.SCREEN_HEIGHT - 1)
+    return [
+        ((0.0, 0.0), (width, 0.0)),
+        ((width, 0.0), (width, height)),
+        ((width, height), (0.0, height)),
+        ((0.0, height), (0.0, 0.0)),
+    ]
+
+
+def obstacle_segments(track: Track) -> list[Segment]:
+    """Drawn walls plus the window border."""
+    return [*track.segments(), *window_border_segments()]
 
 
 def circle_hits_any_segment(center: Point, radius: float, segments: Iterable[Segment]) -> bool:
@@ -53,3 +71,68 @@ def raycast(origin: Point, angle: float, max_distance: float, segments: Iterable
         if hit is not None:
             closest = min(closest, math.dist(origin, hit))
     return closest
+
+
+class SegmentGrid:
+    """Walls bucketed into cells so a ray or a car only tests nearby segments."""
+
+    def __init__(self, segments: Iterable[Segment], cell: float = 80.0) -> None:
+        self.cell = cell
+        self.buckets: dict[tuple[int, int], list[Segment]] = {}
+        for segment in segments:
+            (x1, y1), (x2, y2) = segment
+            for ix in range(int(min(x1, x2) // cell), int(max(x1, x2) // cell) + 1):
+                for iy in range(int(min(y1, y2) // cell), int(max(y1, y2) // cell) + 1):
+                    self.buckets.setdefault((ix, iy), []).append(segment)
+
+    def circle_hits(self, center: Point, radius: float) -> bool:
+        seen: set[Segment] = set()
+        for segment in self._near(center[0], center[1], radius):
+            if segment in seen:
+                continue
+            seen.add(segment)
+            if distance_point_to_segment(center, segment[0], segment[1]) <= radius:
+                return True
+        return False
+
+    def raycast(self, origin: Point, angle: float, max_distance: float) -> float:
+        ox, oy = origin
+        dx, dy = math.cos(angle), math.sin(angle)
+        if dx == 0.0 and dy == 0.0:
+            return max_distance
+        cell = self.cell
+        ix, iy = int(ox // cell), int(oy // cell)
+        step_x, step_y = (1 if dx > 0 else -1), (1 if dy > 0 else -1)
+        t_delta_x = abs(cell / dx) if dx else math.inf
+        t_delta_y = abs(cell / dy) if dy else math.inf
+        t_max_x = ((ix + (dx > 0)) * cell - ox) / dx if dx else math.inf
+        t_max_y = ((iy + (dy > 0)) * cell - oy) / dy if dy else math.inf
+        end = (ox + dx * max_distance, oy + dy * max_distance)
+        closest = max_distance
+        seen: set[Segment] = set()
+        traveled = 0.0
+        while traveled <= closest:
+            for segment in self.buckets.get((ix, iy), ()):
+                if segment in seen:
+                    continue
+                seen.add(segment)
+                hit = segment_intersection(origin, end, segment[0], segment[1])
+                if hit is not None:
+                    closest = min(closest, math.dist(origin, hit))
+            if t_max_x < t_max_y:
+                traveled, t_max_x, ix = t_max_x, t_max_x + t_delta_x, ix + step_x
+            elif t_max_y < t_max_x:
+                traveled, t_max_y, iy = t_max_y, t_max_y + t_delta_y, iy + step_y
+            else:
+                traveled = t_max_x
+                t_max_x += t_delta_x
+                t_max_y += t_delta_y
+                ix += step_x
+                iy += step_y
+        return closest
+
+    def _near(self, x: float, y: float, radius: float):
+        cell = self.cell
+        for ix in range(int((x - radius) // cell), int((x + radius) // cell) + 1):
+            for iy in range(int((y - radius) // cell), int((y + radius) // cell) + 1):
+                yield from self.buckets.get((ix, iy), ())

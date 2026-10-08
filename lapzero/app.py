@@ -9,6 +9,7 @@ import pygame
 
 from . import config, geometry
 from .editor import EditorMode, TrackEditor
+from .evolve import Evolution
 from .network import AimlessDriver, Network, controls_from_output
 from .racer import Racer, RacerControls
 from .sensors import cast_rays, ray_angles
@@ -23,7 +24,7 @@ _MODE_HINTS = {
 
 _HELP_TEXT = (
     "S save   L load   U undo stroke   C clear obstacles   "
-    "R reset track   1 move start   2 move finish   T test drive   Esc quit"
+    "R reset track   1 move start   2 move finish   T test drive   G evolve   Esc quit"
 )
 
 _DRIVE_HELP_TEXT = (
@@ -40,6 +41,7 @@ class FileMode(Enum):
 class AppMode(Enum):
     EDITING = auto()
     DRIVING = auto()
+    EVOLVING = auto()
 
 
 class App:
@@ -63,6 +65,8 @@ class App:
         self.driver: Optional[AimlessDriver] = None
         self.ai_enabled = False
         self.ai_output: Optional[tuple[float, float]] = None
+        self.evolution: Optional[Evolution] = None
+        self.fast_forward = False
 
         self.file_mode = FileMode.NONE
         self.input_text = ""
@@ -91,7 +95,13 @@ class App:
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 self._on_escape()
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_t:
-                self._toggle_drive_mode()
+                if self.mode is not AppMode.EVOLVING:
+                    self._toggle_drive_mode()
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_g:
+                if self.mode is not AppMode.DRIVING:
+                    self._toggle_evolution()
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_f and self.mode is AppMode.EVOLVING:
+                self.fast_forward = not self.fast_forward
             elif self.mode is AppMode.DRIVING and event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_a:
                     self._toggle_ai()
@@ -108,8 +118,23 @@ class App:
     def _on_escape(self) -> None:
         if self.mode is AppMode.DRIVING:
             self._toggle_drive_mode()
+        elif self.mode is AppMode.EVOLVING:
+            self._toggle_evolution()
         else:
             self.running = False
+
+    def _toggle_evolution(self) -> None:
+        if self.mode is AppMode.EVOLVING:
+            self.mode = AppMode.EDITING
+            self.evolution = None
+            self.fast_forward = False
+            return
+        if not self.editor.track.is_complete():
+            self._set_status("Add a start, finish, and an obstacle before evolving")
+            return
+        self.evolution = Evolution(self.editor.track)
+        self.fast_forward = False
+        self.mode = AppMode.EVOLVING
 
     def _toggle_drive_mode(self) -> None:
         if self.mode is AppMode.DRIVING:
@@ -130,7 +155,8 @@ class App:
         self.driver = AimlessDriver(self.network)
         self.ai_enabled = False
         self.ai_output = None
-        self.ray_distances = cast_rays(self.racer.position, self.racer.heading, track.segments())
+        self.walls = geometry.SegmentGrid(geometry.obstacle_segments(track))
+        self.ray_distances = cast_rays(self.racer.position, self.racer.heading, self.walls)
         self.mode = AppMode.DRIVING
 
     def _spawn_heading(self) -> float:
@@ -148,9 +174,7 @@ class App:
         self.network.randomize()
         self.driver = AimlessDriver(self.network)
         self.racer.reset(self.editor.track.start[0], self.editor.track.start[1], self._spawn_heading())
-        self.ray_distances = cast_rays(
-            self.racer.position, self.racer.heading, self.editor.track.segments()
-        )
+        self.ray_distances = cast_rays(self.racer.position, self.racer.heading, self.walls)
         self.ai_output = None
         self._set_status("New random weights")
 
@@ -161,16 +185,20 @@ class App:
                 self.status_message = ""
         if self.mode is AppMode.DRIVING and self.racer is not None:
             self._update_racer(dt)
+        elif self.mode is AppMode.EVOLVING and self.evolution is not None:
+            steps = config.GA_FAST_STEPS if self.fast_forward else config.GA_STEPS_PER_FRAME
+            for _ in range(steps):
+                summary = self.evolution.step(dt)
+                if summary:
+                    self._set_status(summary)
 
     def _update_racer(self, dt: float) -> None:
         self.racer.step(dt, self._current_controls())
         track = self.editor.track
-        if geometry.circle_hits_any_segment(
-            self.racer.position, config.RACER_RADIUS, track.segments()
-        ):
+        if self.walls.circle_hits(self.racer.position, config.RACER_RADIUS):
             self.racer.reset(track.start[0], track.start[1], self._spawn_heading())
             self._set_status("Crashed! Resetting to start.")
-        self.ray_distances = cast_rays(self.racer.position, self.racer.heading, track.segments())
+        self.ray_distances = cast_rays(self.racer.position, self.racer.heading, self.walls)
 
     def _current_controls(self) -> RacerControls:
         if self.ai_enabled and self.driver is not None:
@@ -235,10 +263,13 @@ class App:
     def _draw(self) -> None:
         self.screen.fill(config.BACKGROUND_COLOR)
         self._draw_grid()
+        self._draw_border()
         self._draw_boundaries()
         self._draw_start_finish()
         if self.mode is AppMode.DRIVING and self.racer is not None:
             self._draw_racer()
+        elif self.mode is AppMode.EVOLVING and self.evolution is not None:
+            self._draw_population()
         self._draw_hud()
         if self.file_mode is not FileMode.NONE:
             self._draw_file_prompt()
@@ -267,6 +298,51 @@ class App:
             pygame.draw.line(self.screen, color, racer.position, end, 1)
             if hit:
                 pygame.draw.circle(self.screen, color, end, 3)
+
+    def _draw_population(self) -> None:
+        evolution = self.evolution
+        leader = evolution.leader()
+        for agent in evolution.agents:
+            if agent is leader:
+                continue
+            self._draw_agent(agent, is_leader=False)
+        if leader.alive and not leader.finished and leader.rays:
+            self._draw_agent_rays(leader)
+            if leader.goal is not None:
+                pygame.draw.circle(self.screen, config.IN_PROGRESS_COLOR, leader.goal, 5, 1)
+                pygame.draw.line(self.screen, config.IN_PROGRESS_COLOR, leader.racer.position, leader.goal, 1)
+        self._draw_agent(leader, is_leader=True)
+
+    def _draw_agent(self, agent, is_leader: bool) -> None:
+        if agent.finished:
+            color = config.RACER_FINISHED_COLOR
+        elif not agent.alive:
+            color = config.RACER_DEAD_COLOR
+        elif is_leader:
+            color = config.RACER_AI_COLOR
+        else:
+            color = config.RACER_COLOR
+        radius = 7 if is_leader else 4
+        pygame.draw.circle(self.screen, color, agent.racer.position, radius)
+
+    def _draw_agent_rays(self, agent) -> None:
+        racer = agent.racer
+        for angle, distance in zip(ray_angles(racer.heading), agent.rays):
+            end = (
+                racer.x + math.cos(angle) * distance,
+                racer.y + math.sin(angle) * distance,
+            )
+            hit = distance < config.RAY_MAX_DISTANCE - 0.5
+            color = config.RAY_HIT_COLOR if hit else config.RAY_COLOR
+            pygame.draw.line(self.screen, color, racer.position, end, 1)
+
+    def _draw_border(self) -> None:
+        pygame.draw.rect(
+            self.screen,
+            config.BOUNDARY_COLOR,
+            (0, 0, config.SCREEN_WIDTH, config.SCREEN_HEIGHT),
+            config.BOUNDARY_LINE_WIDTH,
+        )
 
     def _draw_grid(self) -> None:
         for x in range(0, config.SCREEN_WIDTH, config.GRID_SPACING):
@@ -317,10 +393,37 @@ class App:
                 steer, throttle = self.ai_output
                 hint += f"   steer {steer:+.2f}   throttle {throttle:+.2f}"
             return hint
+        if self.mode is AppMode.EVOLVING and self.evolution is not None:
+            evolution = self.evolution
+            explored = len(evolution.explored)
+            phase = "locked on finish" if evolution.finish_known else "exploring"
+            hint = (
+                f"Gen {evolution.generation}   {phase}   alive {evolution.alive_count()}/{len(evolution.agents)}"
+                f"   finished {evolution.finished_count()}   explored {explored}"
+            )
+            if evolution.best_time is not None:
+                hint += f"   record {evolution.best_time:.1f}s"
+            if self.fast_forward:
+                hint += "   FAST"
+            return hint
         return _MODE_HINTS[self.editor.mode]
 
     def _help_text(self) -> str:
-        return _DRIVE_HELP_TEXT if self.mode is AppMode.DRIVING else _HELP_TEXT
+        if self.mode is AppMode.DRIVING:
+            return _DRIVE_HELP_TEXT
+        if self.mode is AppMode.EVOLVING:
+            parts = ["F fast-forward   Esc back to editor"]
+            evolution = self.evolution
+            if evolution is not None and evolution.history:
+                recent = " ".join(f"{score:.1f}" for score in evolution.history[-6:])
+                parts.append(f"fitness {recent}")
+            if evolution is not None and any(time is not None for time in evolution.time_history):
+                recent = " ".join(
+                    "—" if time is None else f"{time:.1f}" for time in evolution.time_history[-6:]
+                )
+                parts.append(f"times {recent}")
+            return "   ".join(parts)
+        return _HELP_TEXT
 
     def _ray_readout(self) -> str:
         return "Rays: " + "  ".join(f"{d:.0f}" for d in self.ray_distances)
