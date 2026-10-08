@@ -20,7 +20,7 @@ def ray_angles(heading: float) -> List[float]:
 
 def cast_rays(origin: Point, heading: float, segments: Iterable[Segment]) -> List[float]:
     """Distance readings for each ray, capped at RAY_MAX_DISTANCE. These plus
-    speed are the neural net's inputs in a later stage.
+    speed are the neural net's inputs.
     """
     segments = list(segments)
     return [

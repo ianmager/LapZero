@@ -42,3 +42,9 @@ RAY_SPREAD_DEGREES = 180.0     # total field of view, centered on heading
 RAY_MAX_DISTANCE = 400.0
 RAY_COLOR = (90, 160, 255)
 RAY_HIT_COLOR = (255, 120, 120)
+
+#neural net (forward pass only; the genetic algorithm sets the weights later)
+NN_HIDDEN_SIZE = 6
+NN_STEER_DEADZONE = 0.2
+NN_THROTTLE_DEADZONE = 0.2
+RACER_AI_COLOR = (120, 210, 255)

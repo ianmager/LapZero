@@ -9,6 +9,7 @@ import pygame
 
 from . import config, geometry
 from .editor import EditorMode, TrackEditor
+from .network import Network, controls_from_output, make_inputs
 from .racer import Racer, RacerControls
 from .sensors import cast_rays, ray_angles
 from .track import Track
@@ -25,7 +26,9 @@ _HELP_TEXT = (
     "R reset track   1 move start   2 move finish   T test drive   Esc quit"
 )
 
-_DRIVE_HELP_TEXT = "Up/Down throttle+brake   Left/Right steer   Esc back to editor"
+_DRIVE_HELP_TEXT = (
+    "Up/Down throttle+brake   Left/Right steer   A toggle AI   N new weights   Esc back to editor"
+)
 
 
 class FileMode(Enum):
@@ -56,6 +59,9 @@ class App:
         self.mode = AppMode.EDITING
         self.racer: Optional[Racer] = None
         self.ray_distances: list[float] = []
+        self.network: Optional[Network] = None
+        self.ai_enabled = False
+        self.ai_output: Optional[tuple[float, float]] = None
 
         self.file_mode = FileMode.NONE
         self.input_text = ""
@@ -85,6 +91,11 @@ class App:
                 self._on_escape()
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_t:
                 self._toggle_drive_mode()
+            elif self.mode is AppMode.DRIVING and event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_a:
+                    self._toggle_ai()
+                elif event.key == pygame.K_n:
+                    self._reroll_weights()
             elif self.mode is AppMode.EDITING:
                 if event.type == pygame.KEYDOWN and event.key == pygame.K_s:
                     self._begin_file_prompt(FileMode.SAVE)
@@ -104,15 +115,40 @@ class App:
             self.mode = AppMode.EDITING
             self.racer = None
             self.ray_distances = []
+            self.network = None
+            self.ai_enabled = False
+            self.ai_output = None
             return
         track = self.editor.track
         if not track.is_complete():
             self._set_status("Add a start, finish, and an obstacle before test driving")
             return
-        heading = math.atan2(track.finish[1] - track.start[1], track.finish[0] - track.start[0])
-        self.racer = Racer(track.start[0], track.start[1], heading)
+        self.racer = Racer(track.start[0], track.start[1], self._spawn_heading())
+        self.network = Network()
+        self.ai_enabled = False
+        self.ai_output = None
         self.ray_distances = cast_rays(self.racer.position, self.racer.heading, track.segments())
         self.mode = AppMode.DRIVING
+
+    def _spawn_heading(self) -> float:
+        track = self.editor.track
+        return math.atan2(track.finish[1] - track.start[1], track.finish[0] - track.start[0])
+
+    def _toggle_ai(self) -> None:
+        self.ai_enabled = not self.ai_enabled
+        self.ai_output = None
+        self._set_status("AI control" if self.ai_enabled else "Manual control")
+
+    def _reroll_weights(self) -> None:
+        if self.network is None or self.racer is None:
+            return
+        self.network.randomize()
+        self.racer.reset(self.editor.track.start[0], self.editor.track.start[1], self._spawn_heading())
+        self.ray_distances = cast_rays(
+            self.racer.position, self.racer.heading, self.editor.track.segments()
+        )
+        self.ai_output = None
+        self._set_status("New random weights")
 
     def _update(self, dt: float) -> None:
         if self.status_timer > 0:
@@ -123,24 +159,28 @@ class App:
             self._update_racer(dt)
 
     def _update_racer(self, dt: float) -> None:
+        self.racer.step(dt, self._current_controls())
+        track = self.editor.track
+        if geometry.circle_hits_any_segment(
+            self.racer.position, config.RACER_RADIUS, track.segments()
+        ):
+            self.racer.reset(track.start[0], track.start[1], self._spawn_heading())
+            self._set_status("Crashed! Resetting to start.")
+        self.ray_distances = cast_rays(self.racer.position, self.racer.heading, track.segments())
+
+    def _current_controls(self) -> RacerControls:
+        if self.ai_enabled and self.network is not None:
+            output = self.network.forward(make_inputs(self.ray_distances, self.racer.speed))
+            self.ai_output = (float(output[0]), float(output[1]))
+            return controls_from_output(output)
+        self.ai_output = None
         keys = pygame.key.get_pressed()
-        controls = RacerControls(
+        return RacerControls(
             throttle=keys[pygame.K_UP],
             brake=keys[pygame.K_DOWN],
             steer_left=keys[pygame.K_LEFT],
             steer_right=keys[pygame.K_RIGHT],
         )
-        self.racer.step(dt, controls)
-        track = self.editor.track
-        if geometry.circle_hits_any_segment(
-            self.racer.position, config.RACER_RADIUS, track.segments()
-        ):
-            heading = math.atan2(
-                track.finish[1] - track.start[1], track.finish[0] - track.start[0]
-            )
-            self.racer.reset(track.start[0], track.start[1], heading)
-            self._set_status("Crashed! Resetting to start.")
-        self.ray_distances = cast_rays(self.racer.position, self.racer.heading, track.segments())
 
     # save / load text prompt
 
@@ -203,12 +243,13 @@ class App:
     def _draw_racer(self) -> None:
         racer = self.racer
         self._draw_rays()
-        pygame.draw.circle(self.screen, config.RACER_COLOR, racer.position, config.RACER_RADIUS)
+        color = config.RACER_AI_COLOR if self.ai_enabled else config.RACER_COLOR
+        pygame.draw.circle(self.screen, color, racer.position, config.RACER_RADIUS)
         nose = (
             racer.x + math.cos(racer.heading) * config.RACER_RADIUS * 1.8,
             racer.y + math.sin(racer.heading) * config.RACER_RADIUS * 1.8,
         )
-        pygame.draw.line(self.screen, config.RACER_COLOR, racer.position, nose, 2)
+        pygame.draw.line(self.screen, color, racer.position, nose, 2)
 
     def _draw_rays(self) -> None:
         racer = self.racer
@@ -266,7 +307,12 @@ class App:
 
     def _mode_hint(self) -> str:
         if self.mode is AppMode.DRIVING and self.racer is not None:
-            return f"Test drive — speed {self.racer.speed:.0f} px/s"
+            who = "AI" if self.ai_enabled else "manual"
+            hint = f"Test drive ({who}) — speed {self.racer.speed:.0f} px/s"
+            if self.ai_output is not None:
+                steer, throttle = self.ai_output
+                hint += f"   steer {steer:+.2f}   throttle {throttle:+.2f}"
+            return hint
         return _MODE_HINTS[self.editor.mode]
 
     def _help_text(self) -> str:
