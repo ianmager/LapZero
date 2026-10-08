@@ -9,7 +9,7 @@ import pygame
 
 from . import config, geometry
 from .editor import EditorMode, TrackEditor
-from .network import Network, controls_from_output, make_inputs
+from .network import AimlessDriver, Network, controls_from_output
 from .racer import Racer, RacerControls
 from .sensors import cast_rays, ray_angles
 from .track import Track
@@ -60,6 +60,7 @@ class App:
         self.racer: Optional[Racer] = None
         self.ray_distances: list[float] = []
         self.network: Optional[Network] = None
+        self.driver: Optional[AimlessDriver] = None
         self.ai_enabled = False
         self.ai_output: Optional[tuple[float, float]] = None
 
@@ -116,6 +117,7 @@ class App:
             self.racer = None
             self.ray_distances = []
             self.network = None
+            self.driver = None
             self.ai_enabled = False
             self.ai_output = None
             return
@@ -125,6 +127,7 @@ class App:
             return
         self.racer = Racer(track.start[0], track.start[1], self._spawn_heading())
         self.network = Network()
+        self.driver = AimlessDriver(self.network)
         self.ai_enabled = False
         self.ai_output = None
         self.ray_distances = cast_rays(self.racer.position, self.racer.heading, track.segments())
@@ -143,6 +146,7 @@ class App:
         if self.network is None or self.racer is None:
             return
         self.network.randomize()
+        self.driver = AimlessDriver(self.network)
         self.racer.reset(self.editor.track.start[0], self.editor.track.start[1], self._spawn_heading())
         self.ray_distances = cast_rays(
             self.racer.position, self.racer.heading, self.editor.track.segments()
@@ -169,8 +173,8 @@ class App:
         self.ray_distances = cast_rays(self.racer.position, self.racer.heading, track.segments())
 
     def _current_controls(self) -> RacerControls:
-        if self.ai_enabled and self.network is not None:
-            output = self.network.forward(make_inputs(self.ray_distances, self.racer.speed))
+        if self.ai_enabled and self.driver is not None:
+            output = self.driver.output(self.ray_distances, self.racer.speed)
             self.ai_output = (float(output[0]), float(output[1]))
             return controls_from_output(output)
         self.ai_output = None

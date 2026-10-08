@@ -43,6 +43,63 @@ def make_inputs(ray_distances: Sequence[float], speed: float) -> np.ndarray:
     return np.concatenate([rays, [speed / config.RACER_MAX_SPEED]])
 
 
+class AimlessDriver:
+    """Drives ahead at a modest speed and turns away when a wall is close.
+
+    A head-on wall makes it commit to one turn direction until the way ahead
+    is open again — flipping side to side never rotates the car in time.
+    Which way it turns comes from the network, so new weights take a
+    different path without overriding the avoidance.
+    """
+
+    def __init__(self, network: Network) -> None:
+        self.network = network
+        self.turning = 0  # -1 left, +1 right, 0 cruising
+
+    def output(self, ray_distances: Sequence[float], speed: float) -> np.ndarray:
+        rays = np.asarray(ray_distances, dtype=float) / config.RAY_MAX_DISTANCE
+        # Only the forward ray counts as "blocked". Side rays stay short in a
+        # corridor and must not be treated as a wall straight ahead.
+        ahead = float(rays[len(rays) // 2])
+        # Positive steer turns right, away from a closer left-hand wall.
+        avoid = (rays[-1] - rays[0]) * 2.2 + (rays[-2] - rays[1]) * 1.4
+        wander = float(self.network.forward(make_inputs(ray_distances, speed))[0])
+
+        if self.turning != 0:
+            if ahead > 0.72:
+                self.turning = 0
+            else:
+                return np.array([float(self.turning), self._turn_throttle(ahead, speed)])
+
+        steer = float(np.clip(avoid, -1.0, 1.0))
+        if ahead < 0.48 and abs(avoid) < 0.75:
+            self.turning = 1 if wander >= 0 else -1
+            if rays[-1] > rays[0] + 0.08:
+                self.turning = 1
+            elif rays[0] > rays[-1] + 0.08:
+                self.turning = -1
+            return np.array([float(self.turning), self._turn_throttle(ahead, speed)])
+
+        return np.array([steer, self._cruise_throttle(ahead, speed)])
+
+    def _turn_throttle(self, ahead: float, speed: float) -> float:
+        if ahead < 0.12:
+            return -1.0
+        if speed < 36.0:
+            return 1.0
+        if speed > 58.0:
+            return -1.0
+        return 0.0
+
+    def _cruise_throttle(self, ahead: float, speed: float) -> float:
+        cruise = min(config.AI_CRUISE_SPEED, ahead * config.RAY_MAX_DISTANCE * 0.55)
+        if speed > cruise + 10.0:
+            return -1.0
+        if speed < cruise - 8.0:
+            return 1.0
+        return 0.0
+
+
 def controls_from_output(output: Sequence[float]) -> RacerControls:
     """Map continuous steering/throttle in [-1, 1] onto the racer's on/off controls."""
     steer, throttle = float(output[0]), float(output[1])

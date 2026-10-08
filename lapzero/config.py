@@ -48,3 +48,4 @@ NN_HIDDEN_SIZE = 6
 NN_STEER_DEADZONE = 0.2
 NN_THROTTLE_DEADZONE = 0.2
 RACER_AI_COLOR = (120, 210, 255)
+AI_CRUISE_SPEED = 110.0        # px/sec cap while wandering; keeps turns tight enough to avoid walls
